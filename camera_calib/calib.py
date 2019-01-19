@@ -94,10 +94,23 @@ def main():
     # m1 = np.reshape([898.8330441160133, 0, 640, 0, 898.5978305609192, 480, 0, 0, 1], (3,3))
     # d1 = np.array([-0.3984360149537951, 0.1302381183957002, 0.009177901416678803, 0.007710077375683005, 0])
 
+    flags = 0
+    # flags |= cv2.CALIB_FIX_INTRINSIC
+    flags |= cv2.CALIB_FIX_PRINCIPAL_POINT
+    # flags |= cv2.CALIB_USE_INTRINSIC_GUESS
+    # flags |= cv2.CALIB_FIX_FOCAL_LENGTH
+    # flags |= cv2.CALIB_FIX_ASPECT_RATIO
+    flags |= cv2.CALIB_ZERO_TANGENT_DIST
+    # flags |= cv2.CALIB_RATIONAL_MODEL
+    # flags |= cv2.CALIB_SAME_FOCAL_LENGTH
+    # flags |= cv2.CALIB_FIX_K3
+    # flags |= cv2.CALIB_FIX_K4
+    # flags |= cv2.CALIB_FIX_K5
+
     rms, M1, d1, r1, t1 = cv2.calibrateCamera(
-                objpoints, imgpointsL, (width//2, height), None, None, flags=calibration_flags)
+                objpoints, imgpointsL, (width//2, height), None, None, flags=flags)
     rms, M2, d2, r2, t2 = cv2.calibrateCamera(
-                objpoints, imgpointsR, (height,width//2), None, None)
+                objpoints, imgpointsR, (width//2, height), None, None, flags=flags)
 
     print(rms)
     print(M1)
@@ -114,18 +127,18 @@ def main():
 
     # print("mean error: ", tot_error/len(objpoints)/2)
 
-    flags = 0
-    flags |= cv2.CALIB_FIX_INTRINSIC
-    # flags |= cv2.CALIB_FIX_PRINCIPAL_POINT
-    flags |= cv2.CALIB_USE_INTRINSIC_GUESS
-    flags |= cv2.CALIB_FIX_FOCAL_LENGTH
-    # flags |= cv2.CALIB_FIX_ASPECT_RATIO
-    flags |= cv2.CALIB_ZERO_TANGENT_DIST
-    # flags |= cv2.CALIB_RATIONAL_MODEL
-    flags |= cv2.CALIB_SAME_FOCAL_LENGTH
-    # flags |= cv2.CALIB_FIX_K3
-    # flags |= cv2.CALIB_FIX_K4
-    # flags |= cv2.CALIB_FIX_K5
+    stereo_flags = 0
+    # stereo_flags |= cv2.CALIB_FIX_INTRINSIC
+    stereo_flags |= cv2.CALIB_FIX_PRINCIPAL_POINT
+    stereo_flags |= cv2.CALIB_USE_INTRINSIC_GUESS
+    # stereo_flags |= cv2.CALIB_FIX_FOCAL_LENGTH
+    # stereo_flags |= cv2.CALIB_FIX_ASPECT_RATIO
+    stereo_flags |= cv2.CALIB_ZERO_TANGENT_DIST
+    # stereo_flags |= cv2.CALIB_RATIONAL_MODEL
+    stereo_flags |= cv2.CALIB_SAME_FOCAL_LENGTH
+    # stereo_flags |= cv2.CALIB_FIX_K3
+    # stereo_flags |= cv2.CALIB_FIX_K4
+    # stereo_flags |= cv2.CALIB_FIX_K5
 
     stereocalib_criteria = (cv2.TERM_CRITERIA_MAX_ITER +
                             cv2.TERM_CRITERIA_EPS, 100, 1e-5)
@@ -134,9 +147,13 @@ def main():
         objpoints, imgpointsL,
         imgpointsR, M1, d1, M2,
         d2, (height,width//2),
-        criteria=stereocalib_criteria, flags=flags)
+        criteria=stereocalib_criteria, flags=stereo_flags)
 
-    # newcameramtx, roi=cv2.getOptimalNewCameraMatrix(M1,d1,(width//2, height),.99)
+    print(ret)
+    print(M1)
+    print(d1)
+
+    newcameramtx, roi=cv2.getOptimalNewCameraMatrix(M1,d1,(width//2, height),.99)
     # newcameramtx, roi = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(M1.astype(cv2.CV_32F), d1.astype(cv2.CV_32F), (width//2, height), np.eye(3), balance=0.5)
     # print("ROI\n", roi)
     imgL = cv2.imread(images[0])[:,0:width//2].copy()
@@ -154,7 +171,8 @@ def main():
 
     camera_model = dict([('M1', M1), ('M2', M2), ('dist1', d1),
                         ('dist2', d2), ('rvecs1', r1),
-                        ('rvecs2', r2), ('R', R), ('T', T),
+                        ('rvecs2', r2), ('tvecs1', t1),
+                        ('tvecs2', t2), ('R', R), ('T', T),
                         ('E', E), ('F', F)])
 
     with open('calib.pkl', 'wb') as f:
