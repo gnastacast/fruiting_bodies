@@ -42,17 +42,26 @@ def main():
     width = 0
     height =0
 
+    two_cams = False
+
     for fname in images:
         img = cv2.imread(fname)
         height, width = img.shape[0:2]
-        imgL = img[:,0:width//2];
-        imgR = img[:,width//2 : width];
-        grayL = cv2.cvtColor(imgL,cv2.COLOR_BGR2GRAY)
-        grayR = cv2.cvtColor(imgR,cv2.COLOR_BGR2GRAY)
+        if two_cams:
+            imgL = img[:,0:width//2]
+            imgR = img[:,width//2 : width]
+            grayL = cv2.cvtColor(imgL,cv2.COLOR_BGR2GRAY)
+            grayR = cv2.cvtColor(imgR,cv2.COLOR_BGR2GRAY)
+            # Find the chess board corners
+            retR, cornersR = cv2.findChessboardCorners(grayR, (9,6), None)
+        else:
+            imgL = img
+            retR = True
 
-        # Find the chess board corners
+        grayL = cv2.cvtColor(imgL,cv2.COLOR_BGR2GRAY)
         retL, cornersL = cv2.findChessboardCorners(grayL, (9,6), None)
-        retR, cornersR = cv2.findChessboardCorners(grayR, (9,6), None)
+
+
 
         # If found, add object points, image points (after refining them)
         if retL == True and retR == True:
@@ -61,12 +70,14 @@ def main():
 
             corners2L = cv2.cornerSubPix(grayL,cornersL,(11,11),(-1,-1),criteria)
             imgpointsL.append(corners2L)
-            corners2R = cv2.cornerSubPix(grayR,cornersR,(11,11),(-1,-1),criteria)
-            imgpointsR.append(corners2R)
+
+            if two_cams:
+                corners2R = cv2.cornerSubPix(grayR,cornersR,(11,11),(-1,-1),criteria)
+                imgpointsR.append(corners2R)
+                offset = np.ones((len(corners2R), 1, 2)) * width//2
 
             # Draw and display the corners
             imgL = cv2.drawChessboardCorners(imgL, (9,6), corners2L, retL)
-            offset = np.ones((len(corners2R), 1, 2)) * width//2
             cv2.imshow('imgL',imgL)
             cv2.waitKey(5)
 
@@ -77,19 +88,19 @@ def main():
     r1 = [np.zeros((1, 1, 3), dtype=np.float64) for i in range(len(objpoints))]
     t1 = [np.zeros((1, 1, 3), dtype=np.float64) for i in range(len(objpoints))]
 
-    rms, _, _, _, _ =  cv2.fisheye.calibrate(np.reshape(objpoints, (len(objpoints), 1, -1, 3)),
-                                             np.reshape(imgpointsL, (len(objpoints), 1, -1, 2)),
-                                             grayL.shape[::-1],
-                                             M1,
-                                             d1,
-                                             r1,
-                                             t1,
-                                             calibration_flags,
-                                             (cv2.TERM_CRITERIA_EPS+cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-6))
+    # rms, _, _, _, _ =  cv2.fisheye.calibrate(np.reshape(objpoints, (len(objpoints), 1, -1, 3)),
+    #                                          np.reshape(imgpointsL, (len(objpoints), 1, -1, 2)),
+    #                                          grayL.shape[::-1],
+    #                                          M1,
+    #                                          d1,
+    #                                          r1,
+    #                                          t1,
+    #                                          calibration_flags,
+    #                                          (cv2.TERM_CRITERIA_EPS+cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-6))
 
-    print(rms)
-    print(M1)
-    print(d1)
+    # print(rms)
+    # print(M1)
+    # print(d1)
 
     # m1 = np.reshape([898.8330441160133, 0, 640, 0, 898.5978305609192, 480, 0, 0, 1], (3,3))
     # d1 = np.array([-0.3984360149537951, 0.1302381183957002, 0.009177901416678803, 0.007710077375683005, 0])
@@ -107,10 +118,15 @@ def main():
     # flags |= cv2.CALIB_FIX_K4
     # flags |= cv2.CALIB_FIX_K5
 
-    rms, M1, d1, r1, t1 = cv2.calibrateCamera(
-                objpoints, imgpointsL, (width//2, height), None, None, flags=flags)
-    rms, M2, d2, r2, t2 = cv2.calibrateCamera(
-                objpoints, imgpointsR, (width//2, height), None, None, flags=flags)
+    if two_cams:
+        rms, M1, d1, r1, t1 = cv2.calibrateCamera(
+                    objpoints, imgpointsL, (width//2, height), None, None, flags=flags)
+        rms, M2, d2, r2, t2 = cv2.calibrateCamera(
+                    objpoints, imgpointsR, (width//2, height), None, None, flags=flags)
+
+    else:
+        rms, M1, d1, r1, t1 = cv2.calibrateCamera(
+                    objpoints, imgpointsL, (width, height), None, None, flags=flags)
 
     print(rms)
     print(M1)
@@ -127,36 +143,42 @@ def main():
 
     # print("mean error: ", tot_error/len(objpoints)/2)
 
-    stereo_flags = 0
-    # stereo_flags |= cv2.CALIB_FIX_INTRINSIC
-    stereo_flags |= cv2.CALIB_FIX_PRINCIPAL_POINT
-    stereo_flags |= cv2.CALIB_USE_INTRINSIC_GUESS
-    # stereo_flags |= cv2.CALIB_FIX_FOCAL_LENGTH
-    # stereo_flags |= cv2.CALIB_FIX_ASPECT_RATIO
-    stereo_flags |= cv2.CALIB_ZERO_TANGENT_DIST
-    # stereo_flags |= cv2.CALIB_RATIONAL_MODEL
-    stereo_flags |= cv2.CALIB_SAME_FOCAL_LENGTH
-    # stereo_flags |= cv2.CALIB_FIX_K3
-    # stereo_flags |= cv2.CALIB_FIX_K4
-    # stereo_flags |= cv2.CALIB_FIX_K5
+    if two_cams:
+        stereo_flags = 0
+        # stereo_flags |= cv2.CALIB_FIX_INTRINSIC
+        stereo_flags |= cv2.CALIB_FIX_PRINCIPAL_POINT
+        stereo_flags |= cv2.CALIB_USE_INTRINSIC_GUESS
+        # stereo_flags |= cv2.CALIB_FIX_FOCAL_LENGTH
+        # stereo_flags |= cv2.CALIB_FIX_ASPECT_RATIO
+        stereo_flags |= cv2.CALIB_ZERO_TANGENT_DIST
+        # stereo_flags |= cv2.CALIB_RATIONAL_MODEL
+        stereo_flags |= cv2.CALIB_SAME_FOCAL_LENGTH
+        # stereo_flags |= cv2.CALIB_FIX_K3
+        # stereo_flags |= cv2.CALIB_FIX_K4
+        # stereo_flags |= cv2.CALIB_FIX_K5
 
-    stereocalib_criteria = (cv2.TERM_CRITERIA_MAX_ITER +
-                            cv2.TERM_CRITERIA_EPS, 100, 1e-5)
+        stereocalib_criteria = (cv2.TERM_CRITERIA_MAX_ITER +
+                                cv2.TERM_CRITERIA_EPS, 100, 1e-5)
 
-    ret, M1, d1, M2, d2, R, T, E, F = cv2.stereoCalibrate(
-        objpoints, imgpointsL,
-        imgpointsR, M1, d1, M2,
-        d2, (height,width//2),
-        criteria=stereocalib_criteria, flags=stereo_flags)
+        ret, M1, d1, M2, d2, R, T, E, F = cv2.stereoCalibrate(
+            objpoints, imgpointsL,
+            imgpointsR, M1, d1, M2,
+            d2, (height,width//2),
+            criteria=stereocalib_criteria, flags=stereo_flags)
 
-    print(ret)
-    print(M1)
-    print(d1)
+        print(ret)
+        print(M1)
+        print(d1)
 
-    newcameramtx, roi=cv2.getOptimalNewCameraMatrix(M1,d1,(width//2, height),.99)
+        newcameramtx, roi=cv2.getOptimalNewCameraMatrix(M1,d1,(width//2, height),.99)
+        imgL = cv2.imread(images[0])[:,0:width//2].copy()
+
+    else:
+        newcameramtx, roi=cv2.getOptimalNewCameraMatrix(M1,d1,(width, height),.99)
+        imgL = cv2.imread(images[0])[:,0:width].copy()
     # newcameramtx, roi = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(M1.astype(cv2.CV_32F), d1.astype(cv2.CV_32F), (width//2, height), np.eye(3), balance=0.5)
     # print("ROI\n", roi)
-    imgL = cv2.imread(images[0])[:,0:width//2].copy()
+
     print(imgL.shape)
     dst = cv2.undistort(imgL, M1, d1, None, M1)
     # crop the image
@@ -169,11 +191,15 @@ def main():
 
     cv2.destroyAllWindows()
 
-    camera_model = dict([('M1', M1), ('M2', M2), ('dist1', d1),
-                        ('dist2', d2), ('rvecs1', r1),
-                        ('rvecs2', r2), ('tvecs1', t1),
-                        ('tvecs2', t2), ('R', R), ('T', T),
-                        ('E', E), ('F', F)])
+    if two_cams:
+        camera_model = dict([('M1', M1), ('M2', M2), ('dist1', d1),
+                            ('dist2', d2), ('rvecs1', r1),
+                            ('rvecs2', r2), ('tvecs1', t1),
+                            ('tvecs2', t2), ('R', R), ('T', T),
+                            ('E', E), ('F', F)])
+    else:
+        camera_model = dict([('M1', M1), ('dist1', d1),
+                            ('rvecs1', r1), ('tvecs1', t1)])
 
     with open('calib.pkl', 'wb') as f:
         pickle.dump(camera_model, f, pickle.HIGHEST_PROTOCOL)

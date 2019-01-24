@@ -1,0 +1,6 @@
+[submodule "iou-tracker"]
+	path = iou-tracker
+	url = https://github.com/bochinski/iou-tracker.git
+[submodule "randomcolor-py"]
+	path = randomcolor-py
+	url = https://github.com/kevinwuhoo/randomcolor-py.git
