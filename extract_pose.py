@@ -11,17 +11,12 @@ import vtk
 import vtktools
 from scipy.spatial import distance
 from scipy.optimize import linear_sum_assignment
-
-
-
-
-colors =[(1.0,  0,  0),
-         (0  ,1.0,  0),
-         (0  ,0  ,1.0),
-         (0  ,1.0,1.0),
-         (1.0,1.0,  0)]
-
+from iou_tracker import IouTracker
 dir_path = os.path.dirname(os.path.realpath(__file__))
+sys.path.append(os.path.join(dir_path, 'randomcolor-py'))
+import randomcolor
+
+rand_color = randomcolor.RandomColor(42)
 
 # https://stackoverflow.com/questions/19448078/python-opencv-access-webcam-maximum-resolution
 def set_res(cap, x,y):
@@ -47,37 +42,36 @@ class Organs(object):
         reader = vtk.vtkSTLReader()
         reader.SetFileName(filename)
 
-        mapper = vtk.vtkPolyDataMapper()
+        self.mapper = vtk.vtkPolyDataMapper()
         if vtk.VTK_MAJOR_VERSION <= 5:
-            mapper.SetInput(reader.GetOutput())
+            self.mapper.SetInput(reader.GetOutput())
         else:
-            mapper.SetInputConnection(reader.GetOutputPort())
+            self.mapper.SetInputConnection(reader.GetOutputPort())
 
         # Create a rendering window and renderer
-        ren = vtk.vtkRenderer()
+        self.ren = vtk.vtkRenderer()
         self.renWin = vtk.vtkRenderWindow()
         self.renWin.SetOffScreenRendering(1)
         self.renWin.SetAlphaBitPlanes(1)  # Enable usage of alpha channel
-        self.renWin.AddRenderer(ren)
+        self.renWin.AddRenderer(self.ren)
 
         self.renWin.SetSize(imgDims[0],imgDims[1])
 
-        # Assume camera matrix has no offset
-        dims = (camMatrix[0,2] * 2, camMatrix[1,2]*2)
+        self.camMatrix = camMatrix
 
-        camera = vtktools.cameraFromMatrix(camMatrix,dims, (imgDims[0],imgDims[1]))
-        ren.SetActiveCamera(camera)
+        # Assume camera matrix has no offset
+        dims = (self.camMatrix[0,2] * 2, self.camMatrix[1,2]*2)
+
+        camera = vtktools.cameraFromMatrix(self.camMatrix, dims, (imgDims[0],imgDims[1]))
+        self.ren.SetActiveCamera(camera)
         # Set camera to look forward from center
 
         self.w2if = vtk.vtkWindowToImageFilter()
         self.w2if.SetInput(self.renWin)
         self.w2if.SetInputBufferTypeToRGBA()
 
-        self.actors = [vtk.vtkActor() for i in range(n)];
-        for i in range(n):
-            self.actors[i].SetMapper(mapper)
-            self.actors[i].GetProperty().SetColor(colors[i])
-            ren.AddActor(self.actors[i])
+        self.actors = {}
+        self.poses = {}
 
         self.w2if.ReadFrontBufferOff()
 
@@ -89,6 +83,60 @@ class Organs(object):
         # self.w2if.WaitForCompletion()
         return vtktools.vtkImageToNumpy(self.w2if.GetOutput())
 
+    def getPose(self, keypoints):
+        scale = 0.95
+        stl_points = scale * np.array([[ 0.000000, 0.000000, 0.000000], # nose
+                                       [ 0.025817,-0.035204, 0.022871], # left eye
+                                       [-0.025817,-0.035204, 0.022871], # right eye
+                                       [ 0.062054,-0.103087, 0.010866], # left ear
+                                       [-0.062053,-0.103087, 0.010866]])# right ear
+
+        # Initial guess for head transform
+        r_guess = np.array([0,1,-1]).reshape(3,1)
+        r_guess = r_guess / np.linalg.norm(r_guess) * np.pi
+        t_guess = np.array([0.0,0,0.5]).reshape(3,1)
+        head = keypoints[[0, 15, 16, 17, 18]].copy()
+        order = np.argsort(-head[:,2])
+
+        if np.sum(head[:, 2] > 0.05) > 3:
+            head_filt = head[order[0:4]][:,0:2].astype(np.float32).reshape((4,1,2))
+            stl_filt = stl_points[order[0:4]].astype(np.float32).reshape((4,1,3))
+            rt, r, t = cv2.solvePnP(stl_filt, head_filt, self.camMatrix, np.zeros(4), r_guess.copy(), t_guess.copy(), useExtrinsicGuess = True)
+            verts = cv2.projectPoints(stl_filt, r, t, self.camMatrix, np.zeros(4))[0].reshape(-1, 2)
+            # for v in verts:
+            #     cv2.circle(img, tuple(v), 5, (255,255,0))
+            if(np.sum(np.abs(verts - head_filt.reshape(4,2))) < 30):
+                return t, r
+
+        return None, None
+
+    def addActor(self, track_id):      
+        self.actors[track_id] = vtk.vtkActor()
+        self.actors[track_id].SetMapper(self.mapper)
+        color = rand_color.generate(hue="pink", luminosity="bright", format_="rgb")
+        self.actors[track_id].GetProperty().SetColor([float(i) / 255 for i in str.split(color[0][5:-1],',')])
+        self.ren.AddActor(self.actors[track_id])
+
+
+    def update(self, tracks, pose_keypoints):
+        new_ids = [tr['id'] for tr in tracks]
+        # Get rid of actors that are no longer tracked
+        remove = [k for k in self.actors if k not in new_ids]
+        for k in remove:
+            self.ren.RemoveActor(self.actors[k])
+            del self.actors[k]
+
+        # Update actors
+        for idx, key in enumerate(new_ids):
+            if key not in self.actors.keys():
+                self.addActor(key)
+            pose_id = tracks[idx]['pose_id']
+            if pose_id == -1:
+                continue
+            t, r = self.getPose(pose_keypoints[pose_id])
+            if t is not None:
+                self.move_organ(key, r, t)
+
     def move_organ(self, organ_id, r, t):
         transform = vtk.vtkTransform()
         angle = np.linalg.norm(r);
@@ -97,26 +145,76 @@ class Organs(object):
         self.actors[organ_id].SetPosition(t)
         self.actors[organ_id].SetOrientation(rot)
 
-def order_points(last_ts, last_rs, new_ts, new_rs):
-    retval_t = last_ts
-    retval_r = last_rs
-
-    diffs = distance.cdist(last_ts, new_ts)
-    rows, cols = linear_sum_assignment(diffs)
-    print(rows, cols, new_ts[:,0].T)
-    retval_t[rows,:] = new_ts[cols,:]
-    retval_r[rows,:] = new_rs[cols,:]
-
-    retval_t[np.logical_and(retval_t == -1000, last_ts != -1000)] = last_ts[np.logical_and(retval_t == -1000, last_ts != -1000)]
-
-    print(retval_t[:,0].T)
-    return retval_t, retval_r
 
 def main():
-    twoVideos = True
-    # twoVideos = False
-    cap = cv2.VideoCapture('video.webm')
-    res = set_res(cap, 2560//2, 960//2)
+    isVideo = False
+    twoVideos = False
+    # twoVideos = True
+    if isVideo:
+        from threading import Thread
+        from queue import Queue
+        class FileVideoStream:
+            def __init__(self, path, queueSize=128):
+                # initialize the file video stream along with the boolean
+                # used to indicate if the thread should be stopped or not
+                self.stream = cv2.VideoCapture(path)
+                self.stream.set(cv2.CAP_PROP_FPS, 30)
+                self.stopped = False
+                # initialize the queue used to store frames read from
+                # the video file
+                self.Q = Queue(maxsize=queueSize)
+            def start(self):
+                # start a thread to read frames from the file video stream
+                t = Thread(target=self.update, args=())
+                t.daemon = True
+                t.start()
+                return self
+            def update(self):
+                # keep looping infinitely
+                while True:
+                    # if the thread indicator variable is set, stop the
+                    # thread
+                    if self.stopped:
+                        return
+         
+                    # otherwise, ensure the queue has room in it
+                    if not self.Q.full():
+                        # read the next frame from the file
+                        (grabbed, frame) = self.stream.read()
+         
+                        # if the `grabbed` boolean is `False`, then we have
+                        # reached the end of the video file
+                        if not grabbed:
+                            self.release()
+                            return
+         
+                        # add the frame to the queue
+                        self.Q.put(frame)
+
+            def read(self):
+                # return next frame in the queue
+                return self.more(), self.Q.get()
+
+            def more(self):
+                # return True if there are still frames in the queue
+                return self.Q.qsize() > 0
+
+            def release(self):
+                # indicate that the thread should be stopped
+                self.stopped = True
+                self.stream.release()
+
+            def set(self, name, val):
+                self.stream.set(name, val)
+
+            def get(self, name):
+                return self.stream.get(name)
+
+        cap = FileVideoStream('video.webm').start()
+    else:
+        cap = cv2.VideoCapture(0)
+    # res = set_res(cap, 2560//2, 960//2)
+    res = set_res(cap, 1280//2, 960//2)
     ret, frame = cap.read()
     
     if twoVideos:
@@ -133,8 +231,10 @@ def main():
     # Remember to add your installation path here
     # Option a
     openpose_dir = '/home/biomed/openpose'
-    if platform == "win32": sys.path.append(os.path.join(openpose_dir, 'build', 'python'));
-    sys.path.append(os.path.join(openpose_dir, 'build', 'python'));
+    if platform == "win32":
+        sys.path.append(os.path.join(openpose_dir, 'build', 'python'))
+    else:
+        sys.path.append(os.path.join(openpose_dir, 'build', 'python'))
     # Option b
     # If you run `make install` (default path is `/usr/local/python` for Ubuntu), you can also access the OpenPose/python module from there. This will install OpenPose and the python library at your desired installation path. Ensure that this is in your python path in order to use it.
     # sys.path.append('/usr/local/python')
@@ -152,7 +252,7 @@ def main():
     # params["face"] = True
     params["model_pose"] = "BODY_25"
     # params["body_disable"] = True
-    params["net_resolution"] = "160x160"
+    params["net_resolution"] = "320x320"
     # params["face_net_resolution"] = "160x160"
 
     # Starting OpenPose
@@ -162,12 +262,6 @@ def main():
 
     datum = op.Datum()
 
-    stl_points = np.array([[ 0.000000, 0.000000, 0.000000], # nose
-                           [ 0.025817,-0.035204, 0.022871], # left eye
-                           [-0.025817,-0.035204, 0.022871], # right eye
-                           [ 0.062054,-0.103087, 0.010866], # left ear
-                           [-0.062053,-0.103087, 0.010866]])# right ear
-
     # Initial guess for head transform
     r_guess = np.array([0,1,-1]).reshape(3,1)
     r_guess = r_guess / np.linalg.norm(r_guess) * np.pi
@@ -176,13 +270,15 @@ def main():
     organs = Organs(K, res)
 
     counter = 0
-    skip = 5
+    skip = 0
 
-    large_n = -1000
+    large_n = -1000.0
 
 
     last_ts = np.array([large_n, large_n, large_n] * len(organs.actors)).reshape(-1, 3)
-    last_rs = np.array([large_n, large_n, large_n] * len(organs.actors)).reshape(-1, 3)
+    last_rs = np.array([    0.0,     0.0,     0.0] * len(organs.actors)).reshape(-1, 3)
+
+    tracker =  IouTracker()
 
     while 1:
         # Capture frame-by-frame
@@ -198,40 +294,54 @@ def main():
         # datum.cvInputData = cv2.resize(cv2.undistort(frame, K, d, K), (320,240))
         datum.cvInputData = frame
         opWrapper.emplaceAndPop([datum])
-        # print(dir(datum))
-        # quit()
+
 
         img = cv2.resize(datum.cvOutputData, res)
         img = img // 2
-        # print(datum.poseKeypoints.shape)
 
-        # print(stl_points[1])
-        # print(K[0,:])
+        msec = cap.get(cv2.CAP_PROP_POS_MSEC)
+        time = msec / 1000
+        print(time)
+        tracker.update(datum, time)
+        tracks = tracker.get_tracks()
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        for t in tracks:
+            i = int(t['id'])
+            x, y = int(t['center'][0]), int(t['center'][1])
+            cv2.putText(img, "%i %.3f \n %i"% (i, t['score'], t['pose_id']), (x,y), font, 0.8, (max(0, 255-100*i),max(0, 255-100*i),70*i))
 
-        ts = np.ones((len(organs.actors), 3)) * large_n
-        rs = np.ones((len(organs.actors), 3)) * large_n
+        organs.update(tracks, datum.poseKeypoints)
+        # # print(datum.poseKeypoints.shape)
 
-        if len(datum.poseKeypoints.shape):
-            for i, pose in enumerate(list(datum.poseKeypoints)):
-                head = pose[[0, 15, 16, 17, 18]].copy()
-                order = np.argsort(-head[:,2])
-                if np.sum(head[:, 2] > 0.05) > 3:
-                    head_filt = head[order[0:4]][:,0:2].astype(np.float32).reshape((4,1,2))
-                    stl_filt = stl_points[order[0:4]].astype(np.float32).reshape((4,1,3))
-                    rt, r, t = cv2.solvePnP(stl_filt, head_filt, K, np.zeros(4), r_guess.copy(), t_guess.copy(), useExtrinsicGuess = True)
-                    verts = cv2.projectPoints(stl_filt, r, t, K, np.zeros(4))[0].reshape(-1, 2)
-                    # for v in verts:
-                    #     cv2.circle(img, tuple(v), 5, (255,255,0))
-                    if(np.sum(np.abs(verts - head_filt.reshape(4,2))) < 30):
-                        ts[i] = t.T
-                        rs[i] = r.T
+        # # print(stl_points[1])
+        # # print(K[0,:])
 
-        ts, rs = order_points(last_ts, last_rs, ts, rs)
-        last_ts = ts
-        last_rs = rs
-        for i, t, r in zip(range(len(ts)), ts, rs):
-            organs.move_organ(i, r.T, t.T)
-            # img = draw_axis(img, r, t, K, np.zeros(4))
+        # ts = np.ones((len(organs.actors), 3)) * large_n
+        # rs = np.ones((len(organs.actors), 3)) * large_n
+
+        # if len(datum.poseKeypoints.shape):
+        #     for i, pose in enumerate(list(datum.poseKeypoints)):
+        #         head = pose[[0, 15, 16, 17, 18]].copy()
+        #         order = np.argsort(-head[:,2])
+        #         if np.sum(head[:, 2] > 0.05) > 3:
+        #             head_filt = head[order[0:4]][:,0:2].astype(np.float32).reshape((4,1,2))
+        #             stl_filt = stl_points[order[0:4]].astype(np.float32).reshape((4,1,3))
+        #             rt, r, t = cv2.solvePnP(stl_filt, head_filt, K, np.zeros(4), r_guess.copy(), t_guess.copy(), useExtrinsicGuess = True)
+        #             verts = cv2.projectPoints(stl_filt, r, t, K, np.zeros(4))[0].reshape(-1, 2)
+        #             # for v in verts:
+        #             #     cv2.circle(img, tuple(v), 5, (255,255,0))
+        #             if(np.sum(np.abs(verts - head_filt.reshape(4,2))) < 30):
+        #                 ts[i] = t.T
+        #                 rs[i] = r.T
+
+
+
+        # ts, rs = order_points(last_ts, last_rs, ts, rs)
+        # for i, t, r in zip(range(len(ts)), ts, rs):
+        #     organs.move_organ(i, r.T, t.T)
+        #     # img = draw_axis(img, r, t, K, np.zeros(4))
+        # last_ts = ts.copy()
+        # last_rs = rs.copy()
 
         # if len(datum.poseKeypoints.shape):
         #     for i, pose in enumerate(list(datum.poseKeypoints)):
