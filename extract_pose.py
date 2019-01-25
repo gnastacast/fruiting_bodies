@@ -227,21 +227,20 @@ def main():
         ratios = (res[0] / (K[0,2] * 2), res[1] / (K[1,2] * 2))
         K[[0, 0], [0, 2]] = K[[0, 0], [0, 2]] * ratios[0]
         K[[1, 1], [2, 1]] = K[[1, 1], [2, 1]] * ratios[1]
-    
-    # Remember to add your installation path here
-    # Option a
-    openpose_dir = '/home/biomed/openpose'
-    if platform == "win32":
-        sys.path.append(os.path.join(openpose_dir, 'build', 'python'))
-    else:
-        sys.path.append(os.path.join(openpose_dir, 'build', 'python'))
-    # Option b
-    # If you run `make install` (default path is `/usr/local/python` for Ubuntu), you can also access the OpenPose/python module from there. This will install OpenPose and the python library at your desired installation path. Ensure that this is in your python path in order to use it.
-    # sys.path.append('/usr/local/python')
-
     # Parameters for OpenPose. Take a look at C++ OpenPose example for meaning of components. Ensure all below are filled
     try:
-        import openpose.pyopenpose as op
+        # Windows Import
+        if platform == "win32":
+            openpose_dir = 'I:\Work\Art\openpose'
+            sys.path.append(os.path.join(openpose_dir, 'build', 'python'));
+            # Change these variables to point to the correct folder (Release/x64 etc.) 
+            sys.path.append(os.path.join(openpose_dir, 'build', 'python', 'openpose','Release'))
+            os.environ['PATH']  = os.environ['PATH'] + ';' + os.path.join(openpose_dir, 'build', 'x64', 'Release') + ';' + os.path.join(openpose_dir, 'build', 'bin') + ';'
+            import pyopenpose as op
+        else:
+            openpose_dir = '/home/biomed/openpose'
+            sys.path.append(os.path.join(openpose_dir, 'build', 'python'));
+            import openpose.pyopenpose as op 
     except ImportError as e:
         print('Error: OpenPose library could not be found. Did you enable `BUILD_PYTHON` in CMake and have this Python script in the right folder?')
         raise e
