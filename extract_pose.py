@@ -9,8 +9,6 @@ import pickle
 from sys import platform
 import vtk
 import vtktools
-from scipy.spatial import distance
-from scipy.optimize import linear_sum_assignment
 from iou_tracker import IouTracker
 dir_path = os.path.dirname(os.path.realpath(__file__))
 sys.path.append(os.path.join(dir_path, 'randomcolor-py'))
