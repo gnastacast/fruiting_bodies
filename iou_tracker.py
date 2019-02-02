@@ -75,7 +75,7 @@ class IouTracker(object):
     Returns:
         list: list of tracks.
     """
-    def __init__(self, sigma_l = 0.0, sigma_iou = 0.3, t_max = 0.25, smooth_window = 10):
+    def __init__(self, sigma_l = 0.1, sigma_iou = 0.3, t_max = 0.25, smooth_window = 10):
         # Initialize variables
         self.sigma_l = sigma_l
         self.sigma_iou = sigma_iou
@@ -127,17 +127,21 @@ class IouTracker(object):
                        'score'       : det['score'],
                        'last_seen'   : update_time} for i, idx, det in zip(new_ids, pose_ids, dets)]
 
+        for idx, track in enumerate(new_tracks):
+            diffs = [iou(track['bbox'], x['bbox']) for x in updated_tracks]
+            print(diffs)
+
         self._next_id += len(new_ids)        
         self._tracks_active = updated_tracks + new_tracks
 
-    def _parse_datum(self, datums, ids=None):
+    def _parse_datum(self, datums):
         ret = []
+        if len(datums.poseKeypoints) == 0:
+            return ret
         if len(datums.poseKeypoints.shape):
             for points, score in zip(datums.poseKeypoints, datums.poseScores):
                 min_x, min_y, _ = np.min(points[points[:,2] > 0.01], axis=0)
                 max_x, max_y, _ = np.max(points[points[:,2] > 0.01], axis=0)
-                if ids is not None:
-                    pass
                 ret.append({'bbox': [min_x, min_y, max_x, max_y], 'score': score})
         
         return ret

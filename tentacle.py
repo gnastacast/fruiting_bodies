@@ -5,7 +5,8 @@ from perlin import perlin_2d
 def axis_angle_to_mat(axis, angle):
     if abs(angle) <= 0.001:
         return(np.eye(3))
-    angle = angle / np.linalg.norm(angle)
+    axis = axis / np.linalg.norm(axis)
+    # print(angle)
     c = np.cos(angle)
     s = np.sin(angle)
     t = 1-c
@@ -16,7 +17,7 @@ def axis_angle_to_mat(axis, angle):
     return R
 
 class Tentacle(object):
-    def __init__(self, n_joints, pos, length, radius, parent=None):
+    def __init__(self, n_joints, pos, radius, parent=None):
         '''
         Create a pybullet tentacle
         '''
@@ -48,9 +49,42 @@ class Tentacle(object):
         Set tentacle base position (xyz meters) and orientation (xyzw quaternion)
         '''
         p.resetBasePositionAndOrientation(self.base, position, orientation)
+        base_pos_inv, base_rot_inv = p.invertTransform(position, orientation)
+        part_pos, part_rot = p.multiplyTransforms(position, orientation, [0,0,self.radius], [0,0,0,1])
+        p.resetBasePositionAndOrientation(self.particles[0], part_pos, part_rot)
+
 
     def get_particle_positions(self):
-        return [p.getBasePositionAndOrientation(p)[0] for p in self.particles]
+        return [p.getBasePositionAndOrientation(part)[0] for part in self.particles]
+
+    def get_particle_rotations(self):
+        return [p.getBasePositionAndOrientation(part)[1] for part in self.particles]
+
+    def get_local_particle_positions(self):
+        positions = []
+        base_pos, base_rot = p.getBasePositionAndOrientation(self.base)
+        base_pos_inv, base_rot_inv = p.invertTransform(base_pos, base_rot)
+        for part in self.particles:
+            pos, rot = p.getBasePositionAndOrientation(part)
+            pos, rot = p.multiplyTransforms(base_pos_inv, base_rot_inv, pos, rot)
+            positions.append(pos)
+        return positions
+
+    def get_local_particle_rotations(self):
+        rotations = []
+        base_pos, base_rot = p.getBasePositionAndOrientation(self.base)
+        base_pos_inv, base_rot_inv = p.invertTransform(base_pos, base_rot)
+        for part in self.particles:
+            pos, rot = p.getBasePositionAndOrientation(part)
+            pos, rot = p.multiplyTransforms(base_pos_inv, base_rot_inv, pos, rot)
+            rotations.append(rot)
+        return rotations
+
+    def get_position(self):
+        return p.getBasePositionAndOrientation(self.base)[0]
+
+    def get_rotation(self):
+        return p.getBasePositionAndOrientation(self.base)[1]
 
     def reset(self, position, orientation):
         base_pos, base_rot = p.getBasePositionAndOrientation(self.base)
@@ -63,7 +97,7 @@ class Tentacle(object):
             p.resetBasePositionAndOrientation(part, part_pos, part_rot)
 
 class TentacleController(object):
-    def __init__(self, offset_scale=5, perlinSize=300):
+    def __init__(self, intensity=100, offset_scale=2, perlinSize=100):
         lin = np.linspace(0,5,perlinSize,endpoint=False)
         x,y = np.meshgrid(lin,lin)
         self.perlin = perlin_2d(x, y, 2)
@@ -71,11 +105,16 @@ class TentacleController(object):
         self.tentacles = []
         self.offsets = []
         self.offset_scale = offset_scale
+        self.intensity = intensity
 
-    def update(self):
+    def update(self, tentacleMask=None):
+        if tentacleMask is None:
+            tentacleMask = [True] * len(self.tentacles)
         ends = [p.getBasePositionAndOrientation(tentacle.particles[-1])[0] for tentacle in self.tentacles]
-        for tentacle, end, offset in zip(self.tentacles, ends, self.offsets):
-            diff = np.subtract(ends, end)
+        for tentacle, end, offset, maskVal in zip(self.tentacles, ends, self.offsets, tentacleMask):
+            if not maskVal:
+                continue
+            diff = np.subtract(np.array(ends)[tentacleMask], end)
             norm = np.linalg.norm(diff, axis=1)
             diff = diff[norm != 0]
             norm = norm[norm != 0]
@@ -88,11 +127,12 @@ class TentacleController(object):
                 self.y = (self.y + np.random.standard_normal())
                 x, y = [int(self.x + offset[0]) % self.perlin.shape[0], int(self.y + offset[1]) % self.perlin.shape[0]]
                 # print(x,y)
-                angle = self.perlin[x, y] * np.pi/2
+                angle = np.sign(self.perlin[x, y]) * 1
                 rot = axis_angle_to_mat(axis, angle)
                 direction = np.dot(rot, direction.T)
+                direction = direction / np.linalg.norm(direction) ** 2
                 # print(direction)
-                p.applyExternalForce(tentacle.particles[-1], -1, direction * 50, end, p.WORLD_FRAME)
+                p.applyExternalForce(tentacle.particles[-1], -1, direction * self.intensity, end, p.WORLD_FRAME)
 
     def add_tentacle(self, tentacle):
         self.tentacles.append(tentacle)
@@ -109,7 +149,7 @@ def main():
     p.setInternalSimFlags(0)
     p.resetSimulation()
 
-    sphereRadius = 0.05
+    sphereRadius = 0.03
 
     gravXid = p.addUserDebugParameter("gravityX",-10,10,0)
     gravYid = p.addUserDebugParameter("gravityY",-10,10,0)
@@ -121,6 +161,16 @@ def main():
     p.configureDebugVisualizer(p.COV_ENABLE_RENDERING,0)
 
     # p.setRealTimeSimulation(1)
+
+
+    distance = 0.1
+    centers = [(distance * i , 0 ,0) for i in range(5)]
+    tentacles = [Tentacle(7, c, sphereRadius) for c in centers]
+    controller = TentacleController()
+    for tentacle in tentacles:
+        controller.add_tentacle(tentacle)
+
+    p.configureDebugVisualizer(p.COV_ENABLE_RENDERING,1)
 
     play = True
 
@@ -141,13 +191,6 @@ def main():
     t.daemon = True
     t.start()
 
-    distance = 0.2
-    centers = [(distance * i , 0 ,0) for i in range(1)]
-    tentacles = [Tentacle(10, c, 1, sphereRadius) for c in centers]
-    controller = TentacleController()
-    for tentacle in tentacles:
-        controller.add_tentacle(tentacle)
-
     started = False
     while True:
         if not started:
@@ -157,7 +200,6 @@ def main():
         # Move tentacles to match orientation of planes
         for tentacle, c in zip(tentacles, centers):
             tentacle.move([c[0],c[1],p.readUserDebugParameter(movBase)], p.getQuaternionFromEuler([p.readUserDebugParameter(rotBase),0,0]))
-            pos, rot = p.getBasePositionAndOrientation(tentacle.particles[-1])
 
         controller.update()
 
